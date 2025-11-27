@@ -1,8 +1,8 @@
-FROM jc21/nginx-proxy-manager:2
+FROM jc21/nginx-proxy-manager:latest
 
-ARG DEFAULT_PORT_HTTP=8080
-ARG DEFAULT_PORT_PRODUCTTION=8181
-ARG DEFAULT_PORT_HTTPS=4443
+ARG DEFAULT_PORT_HTTP=6080
+ARG DEFAULT_PORT_PRODUCTTION=6081
+ARG DEFAULT_PORT_HTTPS=6443
 
 # ref: https://github.com/jlesage/docker-nginx-proxy-manager/blob/master/src/nginx-proxy-manager/build.sh
 

@@ -1,0 +1,129 @@
+name: Sync Upstream nginx-proxy-manager
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  get-upstream-version:
+    runs-on: ubuntu-latest
+    outputs:
+      upstream_tag: ${{ steps.gettag.outputs.tag }}
+      changed: ${{ steps.changed.outputs.changed }}
+
+    steps:
+      - name: Install skopeo and jq
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y skopeo jq
+
+      - name: Pull upstream image
+        run: |
+          docker pull jc21/nginx-proxy-manager:latest
+
+      - name: Get upstream digest
+        id: digest
+        run: |
+          FULL=$(docker inspect --format='{{index .RepoDigests 0}}' jc21/nginx-proxy-manager:latest)
+          DIGEST=${FULL#*@}
+          echo "digest=$DIGEST" >> $GITHUB_OUTPUT
+
+      - name: Get upstream version tag
+        id: gettag
+        run: |
+          INFO=$(skopeo inspect docker://docker.io/jc21/nginx-proxy-manager@${{ steps.digest.outputs.digest }})
+          VERSION=$(echo "$INFO" | jq -r '.Labels["org.opencontainers.image.version"]')
+
+          if [ -z "$VERSION" ] || [ "$VERSION" = "null" ]; then
+            TAGS=$(curl -s https://hub.docker.com/v2/repositories/jc21/nginx-proxy-manager/tags/?page_size=100)
+            VERSION=$(echo $TAGS | jq -r '.results[].name' | grep -E '^[0-9]+\.[0-9]+' | sort -V | tail -n1)
+          fi
+
+          echo "tag=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Load previous version
+        id: changed
+        run: |
+          PREV=""
+          if gh run download --name version --dir . 2>/dev/null; then
+            PREV=$(cat version.txt)
+          fi
+
+          if [ "$PREV" != "${{ steps.gettag.outputs.tag }}" ]; then
+            echo "changed=true" >> $GITHUB_OUTPUT
+          else
+            echo "changed=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Save current version
+        run: echo "${{ steps.gettag.outputs.tag }}" > version.txt
+
+      - name: Upload version
+        uses: actions/upload-artifact@v4
+        with:
+          name: version
+          path: version.txt
+
+
+  build:
+    needs: get-upstream-version
+    if: needs.get-upstream-version.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}:${{ needs.get-upstream-version.outputs.upstream_tag }}
+            ghcr.io/${{ github.repository }}:latest
+
+
+  cleanup-runs:
+    runs-on: ubuntu-latest
+    needs: build
+    if: always()
+
+    steps:
+      - name: Delete old workflow runs (keep last 30)
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const perPage = 100;
+            const keep = 30;
+
+            let runs = await github.rest.actions.listWorkflowRuns({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: context.workflow,
+              per_page: perPage
+            });
+
+            const toDelete = runs.data.workflow_runs.slice(keep);
+
+            for (const run of toDelete) {
+              await github.rest.actions.deleteWorkflowRun({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                run_id: run.id
+              });
+            }

@@ -108,14 +108,14 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            const perPage = 100;
+            const workflow_id = context.workflow_path;
             const keep = 30;
 
-            let runs = await github.rest.actions.listWorkflowRuns({
+            const runs = await github.rest.actions.listWorkflowRuns({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              workflow_id: context.workflow,
-              per_page: perPage
+              workflow_id: workflow_id,
+              per_page: 100
             });
 
             const toDelete = runs.data.workflow_runs.slice(keep);

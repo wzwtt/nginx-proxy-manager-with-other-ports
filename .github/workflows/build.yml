@@ -96,34 +96,3 @@ jobs:
           tags: |
             ghcr.io/${{ github.repository }}:${{ needs.get-upstream-version.outputs.upstream_tag }}
             ghcr.io/${{ github.repository }}:latest
-
-
-  cleanup-runs:
-    runs-on: ubuntu-latest
-    needs: build
-    if: always()
-
-    steps:
-      - name: Delete old workflow runs (keep last 30)
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const workflow_id = context.workflow_path;
-            const keep = 30;
-
-            const runs = await github.rest.actions.listWorkflowRuns({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              workflow_id: workflow_id,
-              per_page: 100
-            });
-
-            const toDelete = runs.data.workflow_runs.slice(keep);
-
-            for (const run of toDelete) {
-              await github.rest.actions.deleteWorkflowRun({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                run_id: run.id
-              });
-            }

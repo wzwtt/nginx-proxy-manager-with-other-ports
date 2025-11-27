@@ -57,6 +57,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Convert digest to tag
+        id: tag
+        run: |
+          RAW="${{ needs.check-upstream.outputs.upstream_digest }}"
+          CLEAN="${RAW#sha256:}"
+          echo "tag=$CLEAN" >> $GITHUB_OUTPUT
+
       - name: Login to GHCR
         uses: docker/login-action@v3
         with:
@@ -72,4 +79,4 @@ jobs:
           push: true
           tags: |
             ghcr.io/${{ github.repository }}:latest
-            ghcr.io/${{ github.repository }}:${{ needs.check-upstream.outputs.upstream_digest }}
+            ghcr.io/${{ github.repository }}:${{ steps.tag.outputs.tag }}

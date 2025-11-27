@@ -8,55 +8,52 @@ on:
     branches: [ "main" ]
 
 jobs:
-  check-upstream:
-    runs-on: ubuntu-latest
-    outputs:
-      upstream_tag: ${{ steps.gettag.outputs.tag }}
-      need_build: ${{ steps.check_existing.outputs.need_build }}
+check-upstream:
+  runs-on: ubuntu-latest
+  outputs:
+    upstream_tag: ${{ steps.gettag.outputs.tag }}
+    need_build: ${{ steps.check_existing.outputs.need_build }}
 
-    steps:
-      - name: Install deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y skopeo jq
+  steps:
+    - name: Install deps
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y skopeo jq
 
-      - name: Get upstream tag from OCI label (or fallback to Docker Hub tags)
-        id: gettag
-        run: |
-          INFO=$(skopeo inspect docker://docker.io/jc21/nginx-proxy-manager:latest 2>/dev/null || true)
-          TAG=$(echo "$INFO" | jq -r '.Labels["org.opencontainers.image.version"]' 2>/dev/null || true)
+    - name: Get upstream tag from OCI label (or fallback to Docker Hub tags)
+      id: gettag
+      run: |
+        INFO=$(skopeo inspect docker://docker.io/jc21/nginx-proxy-manager:latest 2>/dev/null || true)
+        TAG=$(echo "$INFO" | jq -r '.Labels["org.opencontainers.image.version"]' 2>/dev/null || true)
 
-          if [ -z "$TAG" ] || [ "$TAG" = "null" ]; then
-            echo "OCI label not found, querying Docker Hub tags..."
-            TAGS_JSON=$(curl -s "https://hub.docker.com/v2/repositories/jc21/nginx-proxy-manager/tags/?page_size=100")
-            TAG=$(echo "$TAGS_JSON" | jq -r '.results[].name' | grep -E '^[0-9]+\.[0-9]+(\.[0-9]+)?$' | sort -V | tail -n1)
-          fi
+        if [ -z "$TAG" ] || [ "$TAG" = "null" ]; then
+          echo "OCI label not found, querying Docker Hub tags..."
+          TAGS_JSON=$(curl -s "https://hub.docker.com/v2/repositories/jc21/nginx-proxy-manager/tags/?page_size=100")
+          TAG=$(echo "$TAGS_JSON" | jq -r '.results[].name' | grep -E '^[0-9]+\.[0-9]+(\.[0-9]+)?$' | sort -V | tail -n1)
+        fi
 
-          if [ -z "$TAG" ] || [ "$TAG" = "null" ]; then
-            TAG="latest"
-          fi
+        if [ -z "$TAG" ] || [ "$TAG" = "null" ]; then
+          TAG="latest"
+        fi
 
-          echo "tag=$TAG" >> $GITHUB_OUTPUT
+        echo "tag=$TAG" >> $GITHUB_OUTPUT
 
-      - name: Check if ghcr.io image with this tag already exists
-        id: check_existing
-        env:
-          GH_OWNER: ${{ github.repository_owner }}
-          GH_REPO: ${{ github.event.repository.name }}
-          CHECK_TAG: ${{ steps.gettag.outputs.tag }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          URL="https://ghcr.io/v2/${GH_OWNER}/${GH_REPO}/manifests/${CHECK_TAG}"
-          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.oci.image.manifest.v1+json" "${URL}")
+    - name: Login to GHCR
+      uses: docker/login-action@v3
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
 
-          if [ "$HTTP_CODE" = "200" ]; then
-            echo "need_build=false" >> $GITHUB_OUTPUT
-          elif [ "$HTTP_CODE" = "404" ]; then
-            echo "need_build=true" >> $GITHUB_OUTPUT
-          else
-            echo "Got HTTP ${HTTP_CODE} when checking GHCR; default to need_build=true" >&2
-            echo "need_build=true" >> $GITHUB_OUTPUT
-          fi
+    - name: Check if ghcr.io image with this tag already exists
+      id: check_existing
+      run: |
+        TAG=${{ steps.gettag.outputs.tag }}
+        if docker manifest inspect ghcr.io/${{ github.repository }}:$TAG > /dev/null 2>&1; then
+          echo "need_build=false" >> $GITHUB_OUTPUT
+        else
+          echo "need_build=true" >> $GITHUB_OUTPUT
+        fi
 
   build:
     needs: check-upstream

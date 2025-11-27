@@ -9,12 +9,12 @@ on:
 
 jobs:
   check-upstream:
-  runs-on: ubuntu-latest
-  outputs:
-    upstream_tag: ${{ steps.gettag.outputs.tag }}
-    need_build: ${{ steps.check_existing.outputs.need_build }}
+    runs-on: ubuntu-latest
+    outputs:
+      upstream_tag: ${{ steps.gettag.outputs.tag }}
+      need_build: ${{ steps.check_existing.outputs.need_build }}
 
-  steps:
+    steps:
     - name: Install deps
       run: |
         sudo apt-get update

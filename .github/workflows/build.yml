@@ -8,11 +8,11 @@ on:
     branches: [ "main" ]
 
 jobs:
-  get-upstream-version:
+  check-upstream:
     runs-on: ubuntu-latest
     outputs:
-      upstream_tag: ${{ steps.gettag.outputs.tag }}
-      changed: ${{ steps.changed.outputs.changed }}
+      need_build: ${{ steps.compare.outputs.need_build }}
+      upstream_digest: ${{ steps.up.outputs.digest }}
 
     steps:
       - name: Install skopeo and jq
@@ -20,57 +20,34 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y skopeo jq
 
-      - name: Pull upstream image
-        run: |
-          docker pull jc21/nginx-proxy-manager:latest
-
       - name: Get upstream digest
-        id: digest
+        id: up
         run: |
-          FULL=$(docker inspect --format='{{index .RepoDigests 0}}' jc21/nginx-proxy-manager:latest)
-          DIGEST=${FULL#*@}
+          INFO=$(skopeo inspect docker://docker.io/jc21/nginx-proxy-manager:latest)
+          DIGEST=$(echo "$INFO" | jq -r '.Digest')
           echo "digest=$DIGEST" >> $GITHUB_OUTPUT
 
-      - name: Get upstream version tag
-        id: gettag
+      - name: Get local digest
+        id: local
         run: |
-          INFO=$(skopeo inspect docker://docker.io/jc21/nginx-proxy-manager@${{ steps.digest.outputs.digest }})
-          VERSION=$(echo "$INFO" | jq -r '.Labels["org.opencontainers.image.version"]')
-
-          if [ -z "$VERSION" ] || [ "$VERSION" = "null" ]; then
-            TAGS=$(curl -s https://hub.docker.com/v2/repositories/jc21/nginx-proxy-manager/tags/?page_size=100)
-            VERSION=$(echo $TAGS | jq -r '.results[].name' | grep -E '^[0-9]+\.[0-9]+' | sort -V | tail -n1)
+          DIGEST=""
+          if skopeo inspect docker://ghcr.io/${{ github.repository }}:latest > local.json 2>/dev/null; then
+            DIGEST=$(jq -r '.Digest' local.json)
           fi
+          echo "digest=$DIGEST" >> $GITHUB_OUTPUT
 
-          echo "tag=$VERSION" >> $GITHUB_OUTPUT
-
-      - name: Load previous version
-        id: changed
+      - name: Compare digests
+        id: compare
         run: |
-          PREV=""
-          if gh run download --name version --dir . 2>/dev/null; then
-            PREV=$(cat version.txt)
-          fi
-
-          if [ "$PREV" != "${{ steps.gettag.outputs.tag }}" ]; then
-            echo "changed=true" >> $GITHUB_OUTPUT
+          if [ "${{ steps.up.outputs.digest }}" != "${{ steps.local.outputs.digest }}" ]; then
+            echo "need_build=true" >> $GITHUB_OUTPUT
           else
-            echo "changed=false" >> $GITHUB_OUTPUT
+            echo "need_build=false" >> $GITHUB_OUTPUT
           fi
-
-      - name: Save current version
-        run: echo "${{ steps.gettag.outputs.tag }}" > version.txt
-
-      - name: Upload version
-        uses: actions/upload-artifact@v4
-        with:
-          name: version
-          path: version.txt
-
 
   build:
-    needs: get-upstream-version
-    if: needs.get-upstream-version.outputs.changed == 'true'
+    needs: check-upstream
+    if: needs.check-upstream.outputs.need_build == 'true'
     runs-on: ubuntu-latest
 
     permissions:
@@ -87,12 +64,12 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push image
+      - name: Build and push
         uses: docker/build-push-action@v5
         with:
           context: .
           file: ./Dockerfile
           push: true
           tags: |
-            ghcr.io/${{ github.repository }}:${{ needs.get-upstream-version.outputs.upstream_tag }}
             ghcr.io/${{ github.repository }}:latest
+            ghcr.io/${{ github.repository }}:${{ needs.check-upstream.outputs.upstream_digest }}

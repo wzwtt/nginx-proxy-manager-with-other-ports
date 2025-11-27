@@ -11,38 +11,51 @@ jobs:
   check-upstream:
     runs-on: ubuntu-latest
     outputs:
-      need_build: ${{ steps.compare.outputs.need_build }}
-      upstream_digest: ${{ steps.up.outputs.digest }}
+      upstream_tag: ${{ steps.gettag.outputs.tag }}
+      need_build: ${{ steps.check_existing.outputs.need_build }}
 
     steps:
-      - name: Install skopeo and jq
+      - name: Install deps
         run: |
           sudo apt-get update
           sudo apt-get install -y skopeo jq
 
-      - name: Get upstream digest
-        id: up
+      - name: Get upstream tag from OCI label (or fallback to Docker Hub tags)
+        id: gettag
         run: |
-          INFO=$(skopeo inspect docker://docker.io/jc21/nginx-proxy-manager:latest)
-          DIGEST=$(echo "$INFO" | jq -r '.Digest')
-          echo "digest=$DIGEST" >> $GITHUB_OUTPUT
+          INFO=$(skopeo inspect docker://docker.io/jc21/nginx-proxy-manager:latest 2>/dev/null || true)
+          TAG=$(echo "$INFO" | jq -r '.Labels["org.opencontainers.image.version"]' 2>/dev/null || true)
 
-      - name: Get local digest
-        id: local
-        run: |
-          DIGEST=""
-          if skopeo inspect docker://ghcr.io/${{ github.repository }}:latest > local.json 2>/dev/null; then
-            DIGEST=$(jq -r '.Digest' local.json)
+          if [ -z "$TAG" ] || [ "$TAG" = "null" ]; then
+            echo "OCI label not found, querying Docker Hub tags..."
+            TAGS_JSON=$(curl -s "https://hub.docker.com/v2/repositories/jc21/nginx-proxy-manager/tags/?page_size=100")
+            TAG=$(echo "$TAGS_JSON" | jq -r '.results[].name' | grep -E '^[0-9]+\.[0-9]+(\.[0-9]+)?$' | sort -V | tail -n1)
           fi
-          echo "digest=$DIGEST" >> $GITHUB_OUTPUT
 
-      - name: Compare digests
-        id: compare
+          if [ -z "$TAG" ] || [ "$TAG" = "null" ]; then
+            TAG="latest"
+          fi
+
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+
+      - name: Check if ghcr.io image with this tag already exists
+        id: check_existing
+        env:
+          GH_OWNER: ${{ github.repository_owner }}
+          GH_REPO: ${{ github.event.repository.name }}
+          CHECK_TAG: ${{ steps.gettag.outputs.tag }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if [ "${{ steps.up.outputs.digest }}" != "${{ steps.local.outputs.digest }}" ]; then
+          URL="https://ghcr.io/v2/${GH_OWNER}/${GH_REPO}/manifests/${CHECK_TAG}"
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.oci.image.manifest.v1+json" "${URL}")
+
+          if [ "$HTTP_CODE" = "200" ]; then
+            echo "need_build=false" >> $GITHUB_OUTPUT
+          elif [ "$HTTP_CODE" = "404" ]; then
             echo "need_build=true" >> $GITHUB_OUTPUT
           else
-            echo "need_build=false" >> $GITHUB_OUTPUT
+            echo "Got HTTP ${HTTP_CODE} when checking GHCR; default to need_build=true" >&2
+            echo "need_build=true" >> $GITHUB_OUTPUT
           fi
 
   build:
@@ -57,12 +70,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Convert digest to tag
-        id: tag
+      - name: Convert tag for labels (for safety)
+        id: tagfmt
         run: |
-          RAW="${{ needs.check-upstream.outputs.upstream_digest }}"
-          CLEAN="${RAW#sha256:}"
-          echo "tag=$CLEAN" >> $GITHUB_OUTPUT
+          UP=${{ needs.check-upstream.outputs.upstream_tag }}
+          echo "upstream=$UP" >> $GITHUB_OUTPUT
 
       - name: Login to GHCR
         uses: docker/login-action@v3
@@ -71,7 +83,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push
+      - name: Build and push image
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -79,4 +91,4 @@ jobs:
           push: true
           tags: |
             ghcr.io/${{ github.repository }}:latest
-            ghcr.io/${{ github.repository }}:${{ steps.tag.outputs.tag }}
+            ${{ contains(needs.check-upstream.outputs.upstream_tag, 'latest') && format('ghcr.io/{0}/{1}:latest', github.repository_owner, github.event.repository.name) || format('ghcr.io/{0}/{1}:{2}', github.repository_owner, github.event.repository.name, needs.check-upstream.outputs.upstream_tag) }}

@@ -8,7 +8,7 @@ ARG DEFAULT_PORT_HTTPS=6443
 
 RUN \
     # Change the management interface port to the unprivileged port ${DEFAULT_PORT_PRODUCTTION}.
-    sed -i "s|81 default|${DEFAULT_PORT_PRODUCTTION} default|" /etc/nginx/conf.d/production.conf \
+    sed -i "s|{{NPM_ADMIN_PORT}}|${DEFAULT_PORT_PRODUCTTION}|" /etc/nginx/conf.d/production.conf.template \
     # Change the HTTP port 80 to the unprivileged port ${DEFAULT_PORT_HTTP}.
     && sed -i "s|80;|${DEFAULT_PORT_HTTP};|" /etc/nginx/conf.d/default.conf \
     && sed -i "s|\"80\";|"${DEFAULT_PORT_HTTP}";|" /etc/nginx/conf.d/default.conf \
